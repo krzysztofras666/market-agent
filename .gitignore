@@ -1,0 +1,7 @@
+.env
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+cron.log
+previous_recommendations.json
