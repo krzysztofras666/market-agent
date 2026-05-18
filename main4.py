@@ -2,7 +2,6 @@ import json
 import os
 import re
 import smtplib
-import time
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -12,10 +11,6 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
 
 # =============================================================================
 # Configuration
@@ -33,7 +28,6 @@ SMTP_PORT = 587
 STATE_FILE = "previous_recommendations.json"
 
 BIZNESRADAR_URL = "https://www.biznesradar.pl/rekomendacje/"
-MBANK_URL = "https://serwis-informacyjny.mbank.pl/rekomendacje"
 
 PORTFOLIO = {
     "11B": "11BIT",
@@ -283,51 +277,6 @@ def scrape_biznesradar():
     return recommendations
 
 
-def scrape_mbank():
-    recommendations = []
-
-    try:
-        options = webdriver.ChromeOptions()
-        options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=options,
-        )
-
-        try:
-            driver.get(MBANK_URL)
-            time.sleep(5)
-
-            for row in driver.find_elements(By.TAG_NAME, "tr"):
-                cols = row.find_elements(By.TAG_NAME, "td")
-                if len(cols) < 5:
-                    continue
-
-                try:
-                    recommendations.append(
-                        enrich_recommendation(
-                            source="mBank",
-                            company=cols[0].text.strip(),
-                            recommendation=cols[1].text.strip(),
-                            target_price=clean_price(cols[2].text.strip()),
-                            current_price=clean_price(cols[3].text.strip()),
-                            date=cols[4].text.strip(),
-                        )
-                    )
-                except Exception as e:
-                    print("mBank row parse error:", e)
-        finally:
-            driver.quit()
-
-    except Exception as e:
-        print("mBank selenium error:", e)
-
-    return recommendations
-
-
 # =============================================================================
 # Analysis and reporting
 # =============================================================================
@@ -475,8 +424,7 @@ def main():
     previous_state = load_previous_state()
 
     recommendations = scrape_biznesradar()
-    recommendations.extend(scrape_mbank())
-    print("Total recommendations:", len(recommendations)))
+    print(f"Scraped {len(recommendations)} from BiznesRadar")
 
     portfolio_hits = filter_portfolio_hits(recommendations)
     print_portfolio_matches(portfolio_hits)

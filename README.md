@@ -1,8 +1,6 @@
 # GPW Recommendations Daily Emailer
 
-Scrapes GPW analyst recommendations, summarizes them with OpenAI, and sends a daily email via Gmail.
-
-**Sources:** BiznesRadar, mBank (when available)
+Scrapes GPW analyst recommendations from BiznesRadar, summarizes them with OpenAI, and sends a daily email via Gmail.
 
 ## Setup
 
