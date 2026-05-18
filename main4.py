@@ -474,13 +474,9 @@ def send_email(subject, body):
 def main():
     previous_state = load_previous_state()
 
-    #recommendations = scrape_biznesradar()
-    #recommendations.extend(scrape_mbank())
-    recommendations = scrape_mbank()
-    #recommendations.extend(scrape_biznesradar())
-    
-    
-    print("mBank recommendations:", len(recommendations))
+    recommendations = scrape_biznesradar()
+    recommendations.extend(scrape_mbank())
+    print("Total recommendations:", len(recommendations)))
 
     portfolio_hits = filter_portfolio_hits(recommendations)
     print_portfolio_matches(portfolio_hits)
@@ -492,9 +488,8 @@ def main():
     ai_summary = generate_ai_summary(portfolio_hits)
 
     email_body = build_email_body(top_trades, portfolio_hits, changes, ai_summary)
-    #send_email("GPW Daily Analyst Recommendations", email_body)
-
-    #print("Email sent successfully.")
+    send_email("GPW Daily Analyst Recommendations", email_body)
+    print("Email sent successfully.")
 
 
 if __name__ == "__main__":
