@@ -3,5 +3,3 @@ openai
 pandas
 python-dotenv
 requests
-selenium
-webdriver-manager
