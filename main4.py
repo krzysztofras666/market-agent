@@ -2,7 +2,7 @@ import json
 import os
 import re
 import smtplib
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -28,6 +28,40 @@ SMTP_PORT = 587
 STATE_FILE = "previous_recommendations.json"
 
 BIZNESRADAR_URL = "https://www.biznesradar.pl/rekomendacje/"
+STREFA_INWESTOROW_URL = (
+    "https://strefainwestorow.pl/rekomendacje/lista-rekomendacji"
+)
+MAX_RECOMMENDATION_AGE_DAYS = 30
+
+POLISH_MONTHS = {
+    "sty": 1,
+    "lut": 2,
+    "mar": 3,
+    "kwi": 4,
+    "maj": 5,
+    "cze": 6,
+    "lip": 7,
+    "sie": 8,
+    "wrz": 9,
+    "paź": 10,
+    "paz": 10,
+    "lis": 11,
+    "gru": 12,
+    "stycznia": 1,
+    "lutego": 2,
+    "marca": 3,
+    "kwietnia": 4,
+    "maja": 5,
+    "czerwca": 6,
+    "lipca": 7,
+    "sierpnia": 8,
+    "września": 9,
+    "wrzesnia": 9,
+    "października": 10,
+    "pazdziernika": 10,
+    "listopada": 11,
+    "grudnia": 12,
+}
 
 PORTFOLIO = {
     "11B": "11BIT",
@@ -52,7 +86,6 @@ PORTFOLIO = {
     "LPP": "LPP",
     "MDV": "MODIVO",
     "MOL": "MOLECURE",
-    "NWG": "NEWAG",
     "NCL": "NOCTILUCA",
     "OPL": "OPONEO",
     "PAS": "PASSUS",
@@ -91,7 +124,6 @@ PORTFOLIO_ALIASES = {
     "LPP": "LPP",
     "MODIVO": "MDV",
     "MOLECURE": "MOL",
-    "NEWAG": "NWG",
     "NOCTILUCA": "NCL",
     "OPONEO": "OPL",
     "PASSUS": "PAS",
@@ -112,6 +144,14 @@ PORTFOLIO_ALIASES = {
     "ŻABKA": "ZAB",
 }
 
+# Alternate tickers used on some sites -> portfolio ticker
+TICKER_ALIASES = {
+    "MOC": "MOL",
+    "1AT": "ATA",
+    "OPN": "OPL",
+    "RYVU": "RVU",
+}
+
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 
@@ -119,9 +159,49 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 # Parsing and scoring
 # =============================================================================
 
+def parse_recommendation_date(date_str):
+    text = (date_str or "").strip().lower()
+    if not text:
+        return None
+
+    match = re.search(r"(\d{1,2})-(\d{1,2})-(\d{4})", text)
+    if match:
+        day, month, year = map(int, match.groups())
+        return datetime(year, month, day)
+
+    match = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", text)
+    if match:
+        day, month, year = map(int, match.groups())
+        return datetime(year, month, day)
+
+    match = re.search(r"(\d{1,2})\s+([a-ząćęłńóśźż]+)\s+(\d{4})", text)
+    if match:
+        day = int(match.group(1))
+        month_name = match.group(2)
+        year = int(match.group(3))
+        month = POLISH_MONTHS.get(month_name)
+        if month:
+            return datetime(year, month, day)
+
+    return None
+
+
+def is_recent_recommendation(date_str, max_age_days=MAX_RECOMMENDATION_AGE_DAYS):
+    parsed = parse_recommendation_date(date_str)
+    if parsed is None:
+        return False
+
+    cutoff = datetime.now() - timedelta(days=max_age_days)
+    return parsed.date() >= cutoff.date()
+
+
 def clean_price(value):
+    text = str(value).replace(" ", "").replace(",", ".")
+    match = re.search(r"[\d.]+", text)
+    if not match:
+        return 0.0
     try:
-        return float(str(value).replace(" ", "").replace(",", "."))
+        return float(match.group())
     except (ValueError, TypeError):
         return 0.0
 
@@ -131,6 +211,25 @@ def extract_ticker(company_name):
     if match:
         return match.group(1).upper().strip()
     return company_name.upper().strip()
+
+
+def resolve_canonical_ticker(company_name):
+    ticker = extract_ticker(company_name)
+    ticker = TICKER_ALIASES.get(ticker, ticker)
+
+    if ticker in PORTFOLIO:
+        return ticker
+
+    normalized = normalize_name(company_name)
+    for alias, port_ticker in PORTFOLIO_ALIASES.items():
+        if alias in normalized:
+            return port_ticker
+
+    return None
+
+
+def canonical_company_name(ticker):
+    return f"{PORTFOLIO[ticker]} ({ticker})"
 
 
 def normalize_name(name):
@@ -173,7 +272,7 @@ def calculate_score(rec):
         score += 0
     elif "neutral" in recommendation:
         score -= 1
-    elif "sprzedaj" in recommendation:
+    elif "sprzedaj" in recommendation or "redukuj" in recommendation:
         score -= 3
 
     if rec["current_price"] > 0:
@@ -206,9 +305,11 @@ def upside_percent(rec):
 
 
 def enrich_recommendation(source, company, recommendation, target_price, current_price, date):
+    ticker = resolve_canonical_ticker(company)
     rec = {
         "source": source,
         "company": company,
+        "ticker": ticker,
         "recommendation": recommendation,
         "target_price": target_price,
         "current_price": current_price,
@@ -216,7 +317,7 @@ def enrich_recommendation(source, company, recommendation, target_price, current
     }
     rec["score"] = calculate_score(rec)
     rec["signal"] = trading_signal(rec["score"])
-    rec["portfolio_match"] = is_portfolio_match(company)
+    rec["portfolio_match"] = ticker is not None
     return rec
 
 
@@ -257,10 +358,14 @@ def scrape_biznesradar():
     recommendations = []
     for row in table.find_all("tr")[1:]:
         cols = row.find_all("td")
-        if len(cols) < 6:
+        if len(cols) < 7:
             continue
 
         try:
+            date = cols[6].get_text(strip=True)
+            if not is_recent_recommendation(date):
+                continue
+
             recommendations.append(
                 enrich_recommendation(
                     source="BiznesRadar",
@@ -268,11 +373,50 @@ def scrape_biznesradar():
                     recommendation=cols[1].get_text(strip=True),
                     target_price=clean_price(cols[2].get_text(strip=True)),
                     current_price=clean_price(cols[3].get_text(strip=True)),
-                    date=cols[5].get_text(strip=True),
+                    date=date,
                 )
             )
         except Exception as e:
             print("BiznesRadar row parse error:", e)
+
+    return recommendations
+
+
+def scrape_strefa_inwestorow():
+    response = requests.get(
+        STREFA_INWESTOROW_URL,
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    table = soup.find("table")
+    if not table:
+        return []
+
+    recommendations = []
+    for row in table.find_all("tr")[1:]:
+        cols = row.find_all("td")
+        if len(cols) < 8:
+            continue
+
+        try:
+            date = cols[7].get_text(strip=True)
+            if not is_recent_recommendation(date):
+                continue
+
+            recommendations.append(
+                enrich_recommendation(
+                    source="Strefa Inwestorów",
+                    company=cols[0].get_text(strip=True),
+                    recommendation=cols[1].get_text(strip=True),
+                    target_price=clean_price(cols[3].get_text(strip=True)),
+                    current_price=clean_price(cols[2].get_text(strip=True)),
+                    date=date,
+                )
+            )
+        except Exception as e:
+            print("Strefa Inwestorów row parse error:", e)
 
     return recommendations
 
@@ -283,6 +427,53 @@ def scrape_biznesradar():
 
 def filter_portfolio_hits(recommendations):
     return [rec for rec in recommendations if rec["portfolio_match"]]
+
+
+def merge_portfolio_hits(portfolio_hits):
+    """Merge BiznesRadar + Strefa rows into one entry per portfolio ticker."""
+    grouped = {}
+    for rec in portfolio_hits:
+        ticker = rec["ticker"]
+        grouped.setdefault(ticker, []).append(rec)
+
+    merged = []
+    for ticker, entries in grouped.items():
+        entries.sort(
+            key=lambda r: parse_recommendation_date(r["date"]) or datetime.min,
+            reverse=True,
+        )
+
+        best = max(entries, key=lambda r: r["score"])
+        priced = next((e for e in entries if e["current_price"] > 0), entries[0])
+
+        details = []
+        seen = set()
+        for entry in entries:
+            key = (entry["source"], entry["recommendation"].lower(), entry["date"])
+            if key in seen:
+                continue
+            seen.add(key)
+            details.append(
+                f"{entry['source']}: {entry['recommendation']} ({entry['date']})"
+            )
+
+        merged.append(
+            {
+                "source": ", ".join(sorted({e["source"] for e in entries})),
+                "company": canonical_company_name(ticker),
+                "ticker": ticker,
+                "recommendation": best["recommendation"],
+                "recommendation_details": details,
+                "target_price": priced["target_price"],
+                "current_price": priced["current_price"],
+                "date": entries[0]["date"],
+                "score": best["score"],
+                "signal": trading_signal(best["score"]),
+                "portfolio_match": True,
+            }
+        )
+
+    return sorted(merged, key=lambda r: r["score"], reverse=True)
 
 
 def print_portfolio_matches(portfolio_hits):
@@ -302,13 +493,29 @@ def detect_changes(portfolio_hits, previous_state):
     return changes
 
 
-def get_top_trades(portfolio_hits, limit=5):
+def get_top_trades(portfolio_hits, limit=10):
     return sorted(portfolio_hits, key=lambda x: x["score"], reverse=True)[:limit]
 
 
-def generate_ai_summary(portfolio_hits):
-    df = pd.DataFrame(portfolio_hits)
-    prompt = f"""
+def generate_ai_summary(records, portfolio_only=False):
+    df = pd.DataFrame(records)
+    if portfolio_only:
+        prompt = f"""
+Analyze today's analyst recommendations for my GPW portfolio holdings only.
+
+Recommendations:
+
+{df.to_string(index=False)}
+
+Provide:
+1. Portfolio sentiment
+2. Top conviction holdings
+3. Actions to consider (buy/hold/reduce)
+4. Notable changes between sources
+5. BUY / HOLD / REDUCE summary for my portfolio
+"""
+    else:
+        prompt = f"""
 Analyze today's GPW analyst recommendations.
 
 Recommendations:
@@ -334,6 +541,7 @@ def format_trade_section(trade):
     return f"""
 {trade['company']}
 Source: {trade['source']}
+Date: {trade['date']}
 Signal: {trade['signal']}
 Score: {trade['score']}/10
 Recommendation: {trade['recommendation']}
@@ -342,33 +550,62 @@ Upside: {upside_percent(trade)}%
 
 
 def format_portfolio_action(rec):
-    return f"""
+    block = f"""
 {rec['company']}
 Source: {rec['source']}
+Date: {rec['date']}
 Signal: {rec['signal']}
 Score: {rec['score']}/10
 Recommendation: {rec['recommendation']}
 """
+    details = rec.get("recommendation_details") or []
+    if len(details) > 1:
+        block += "Details:\n"
+        for line in details:
+            block += f"  - {line}\n"
+    return block
 
 
 def format_change(rec):
     return f"""
 {rec['company']}
 Source: {rec['source']}
+Date: {rec['date']}
 NEW Recommendation: {rec['recommendation']}
 Signal: {rec['signal']}
 """
 
 
-def build_email_body(top_trades, portfolio_hits, changes, ai_summary):
+def build_email_body(
+    top_trades,
+    portfolio_hits,
+    changes,
+    ai_summary,
+    portfolio_top_trades,
+    portfolio_ai_summary,
+):
     body = f"""GPW DAILY ANALYSIS
 Generated: {datetime.now()}
 
 ====================================
-TOP CONVICTION TRADES
+TOP CONVICTION TRADES (ALL)
 ====================================
 """
     for trade in top_trades:
+        body += format_trade_section(trade)
+
+    body += f"""
+====================================
+AI MARKET SUMMARY (ALL)
+====================================
+
+{ai_summary}
+
+====================================
+TOP PORTFOLIO TRADES
+====================================
+"""
+    for trade in portfolio_top_trades:
         body += format_trade_section(trade)
 
     body += """
@@ -392,10 +629,10 @@ CHANGED RECOMMENDATIONS
 
     body += f"""
 ====================================
-AI MARKET SUMMARY
+AI PORTFOLIO SUMMARY
 ====================================
 
-{ai_summary}
+{portfolio_ai_summary}
 """
     return body
 
@@ -404,9 +641,16 @@ def send_email(subject, body):
     if not EMAIL_PASSWORD:
         raise ValueError("EMAIL_PASSWORD is empty")
 
+   # List of recipients
+    recipients = [
+       EMAIL_RECEIVER,
+        "grzegorz.ras@onet.eu",
+        "Sebastian.ozdoba@gmail.com"
+    ]
+
     msg = MIMEMultipart()
     msg["From"] = EMAIL_SENDER
-    msg["To"] = EMAIL_RECEIVER
+    msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
 
@@ -416,6 +660,8 @@ def send_email(subject, body):
         server.send_message(msg)
 
 
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -423,19 +669,34 @@ def send_email(subject, body):
 def main():
     previous_state = load_previous_state()
 
-    recommendations = scrape_biznesradar()
-    print(f"Scraped {len(recommendations)} from BiznesRadar")
+    biznesradar = scrape_biznesradar()
+    strefa = scrape_strefa_inwestorow()
+    recommendations = biznesradar + strefa
+    print(
+        f"Scraped {len(biznesradar)} from BiznesRadar, "
+        f"{len(strefa)} from Strefa Inwestorów ({len(recommendations)} total)"
+    )
 
-    portfolio_hits = filter_portfolio_hits(recommendations)
+    portfolio_hits = merge_portfolio_hits(filter_portfolio_hits(recommendations))
     print_portfolio_matches(portfolio_hits)
 
     changes = detect_changes(portfolio_hits, previous_state)
     save_current_state(portfolio_hits)
 
-    top_trades = get_top_trades(portfolio_hits)
-    ai_summary = generate_ai_summary(portfolio_hits)
+    top_trades = get_top_trades(recommendations)
+    ai_summary = generate_ai_summary(recommendations)
 
-    email_body = build_email_body(top_trades, portfolio_hits, changes, ai_summary)
+    portfolio_top_trades = get_top_trades(portfolio_hits)
+    portfolio_ai_summary = generate_ai_summary(portfolio_hits, portfolio_only=True)
+
+    email_body = build_email_body(
+        top_trades,
+        portfolio_hits,
+        changes,
+        ai_summary,
+        portfolio_top_trades,
+        portfolio_ai_summary,
+    )
     send_email("GPW Daily Analyst Recommendations", email_body)
     print("Email sent successfully.")
 
