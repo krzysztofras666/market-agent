@@ -1,6 +1,6 @@
 # GPW Recommendations Daily Emailer
 
-Scrapes GPW analyst recommendations from BiznesRadar, summarizes them with OpenAI, and sends a daily email via Gmail.
+Scrapes GPW analyst recommendations from BiznesRadar, [Strefa Inwestorów](https://strefainwestorow.pl/rekomendacje), and [Bankier.pl](https://www.bankier.pl/gielda/rekomendacje), summarizes them with OpenAI, and sends a daily email via Gmail.
 
 ## Setup
 

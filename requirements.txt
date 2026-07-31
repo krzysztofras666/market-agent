@@ -1,5 +1,7 @@
 beautifulsoup4
+curl_cffi
 openai
 pandas
 python-dotenv
 requests
+yfinance

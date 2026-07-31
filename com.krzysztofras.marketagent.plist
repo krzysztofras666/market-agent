@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.krzysztofras.marketagent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/krzysztofras/market-agent/venv/bin/python</string>
+        <string>/Users/krzysztofras/market-agent/main4.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/krzysztofras/market-agent</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/krzysztofras/market-agent/venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>45</integer>
+    </dict>
+
+    <!--
+        Catch-up: if the Mac was off / asleep at 08:45, launchd runs the job
+        as soon as the user is logged in again. RunAtLoad=false so reloading
+        the agent doesn't trigger an immediate run.
+    -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/krzysztofras/market-agent/cron.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/krzysztofras/market-agent/cron.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
